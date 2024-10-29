@@ -1,9 +1,11 @@
-import * as semver from 'semver';
-
+import * as fs from 'fs';
+import * as path from 'path';
 import {Config} from '../config';
 import {requestBody} from '../http_utils';
 
 import {BinaryUrl} from './binary';
+import {IKnownGoodVersionsWithDownloads, ILastGoodVersionWithDownloads} from './chromedriver/types';
+import {getChromeDriverPlatform, knownGoodVersionsWithDownloadsUrl, lastKnownGoodVersionsWithDownloadsUrl,} from './chromedriver/utils';
 import {XmlConfigSource} from './config_source';
 
 export class ChromeXml extends XmlConfigSource {
@@ -64,64 +66,66 @@ export class ChromeXml extends XmlConfigSource {
   /**
    * Gets the latest item from the XML.
    */
-  private getLatestChromeDriverVersion(): Promise<BinaryUrl> {
-    const latestReleaseUrl = 'https://chromedriver.storage.googleapis.com/LATEST_RELEASE';
-    return requestBody(latestReleaseUrl).then(latestVersion => {
-      return this.getSpecificChromeDriverVersion(latestVersion);
-    });
+  private async getLatestChromeDriverVersion(): Promise<BinaryUrl> {
+    const lastKnownGoodVersionsWithDownloadsRaw =
+        await requestBody(lastKnownGoodVersionsWithDownloadsUrl);
+
+    const latestVersionBody =
+        (JSON.parse(lastKnownGoodVersionsWithDownloadsRaw) as ILastGoodVersionWithDownloads)
+            .channels.Stable;
+
+    const latestVersion = latestVersionBody.version;
+    const latestVersionUrl = latestVersionBody.downloads.chromedriver
+                                 .find(obj => obj.platform == getChromeDriverPlatform())
+                                 .url;
+
+    const latestMajorVersion = latestVersion.split('.')[0];
+
+    const localVersionFileName =
+        fs.readdirSync(path.resolve(__dirname, '..', '..', '..', 'selenium'))
+            .find(f => f.startsWith(`chromedriver_${latestMajorVersion}`)) ||
+        '';
+
+    const localVersion = localVersionFileName.split('_').pop().replace(/\.exe$/, '');
+    const localVersion_Url = latestVersionUrl.replace(latestVersion, localVersion);
+    const localMajorVersion = localVersion.split('.')[0];
+
+    if (latestMajorVersion == localMajorVersion) {
+      return {
+        url: localVersion_Url,
+        version: localVersion,
+      };
+    } else {
+      return {
+        url: latestVersionUrl,
+        version: latestVersion,
+      };
+    }
   }
 
   /**
    * Gets a specific item from the XML.
    */
-  private getSpecificChromeDriverVersion(inputVersion: string): Promise<BinaryUrl> {
-    return this.getVersionList().then(list => {
-      const specificVersion = getValidSemver(inputVersion);
-      if (specificVersion === '') {
-        throw new Error(`version ${inputVersion} ChromeDriver does not exist`)
-      }
-      let itemFound = '';
-      for (let item of list) {
-        // Get a semantic version.
-        let version = item.split('/')[0];
-        if (semver.valid(version) == null) {
-          const lookUpVersion = getValidSemver(version);
+  private async getSpecificChromeDriverVersion(inputVersion: string): Promise<BinaryUrl> {
+    const knownGoodVersionsWithDownloadsRaw = await requestBody(knownGoodVersionsWithDownloadsUrl);
 
-          if (semver.valid(lookUpVersion)) {
-            // Check to see if the specified version matches.
-            if (lookUpVersion === specificVersion) {
-              // When item found is null, check the os arch
-              // 64-bit version works OR not 64-bit version and the path does not have '64'
-              if (itemFound == '') {
-                if (this.osarch === 'x64' ||
-                    (this.osarch !== 'x64' && !item.includes(this.getOsTypeName() + '64'))) {
-                  itemFound = item;
-                }
-                if (this.osarch === 'arm64' && this.ostype === 'Darwin' && item.includes('m1')) {
-                  itemFound = item;
-                }
-              }
-              // If the semantic version is the same, check os arch.
-              // For 64-bit systems, prefer the 64-bit version.
-              else if (this.osarch === 'x64') {
-                // No win64 version exists, so even on x64 we need to look for win32
-                const osTypeNameAndArch =
-                    this.getOsTypeName() + (this.getOsTypeName() === 'win' ? '32' : '64');
+    const allVersions =
+        (JSON.parse(knownGoodVersionsWithDownloadsRaw) as IKnownGoodVersionsWithDownloads).versions
 
-                if (item.includes(osTypeNameAndArch)) {
-                  itemFound = item;
-                }
-              }
-            }
-          }
-        }
-      }
-      if (itemFound == '') {
-        return {url: '', version: inputVersion};
-      } else {
-        return {url: Config.cdnUrls().chrome + itemFound, version: inputVersion};
-      }
-    });
+    const version = allVersions.find((itr) => itr.version === inputVersion);
+    if (!version)
+      throw new Error(`Chrome version ${inputVersion} in ${knownGoodVersionsWithDownloadsUrl}`);
+
+    const download =
+        version.downloads.chromedriver.find((itr) => itr.platform === getChromeDriverPlatform());
+    if (!download)
+      throw new Error(`Can't find download for platform ${getChromeDriverPlatform()} for version ${
+          inputVersion} in ${knownGoodVersionsWithDownloadsUrl}`);
+
+    return {
+      url: download.url,
+      version: inputVersion,
+    };
   }
 }
 

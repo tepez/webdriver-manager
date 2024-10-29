@@ -2,6 +2,7 @@ import {Config} from '../config';
 
 import {Binary, BinaryUrl, OS} from './binary';
 import {ChromeXml} from './chrome_xml';
+import {getChromeDriverPlatform} from './chromedriver/utils';
 
 export class ChromeDriver extends Binary {
   static id = 'chrome';
@@ -36,5 +37,9 @@ export class ChromeDriver extends Binary {
     } else {
       return this.configSource.getVersionList();
     }
+  }
+
+  zipContentName(): string {
+    return `chromedriver-${getChromeDriverPlatform()}/${this.name}${this.executableSuffix()}`;
   }
 }
